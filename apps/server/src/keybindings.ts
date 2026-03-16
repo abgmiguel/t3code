@@ -72,7 +72,8 @@ export const DEFAULT_KEYBINDINGS: ReadonlyArray<KeybindingRule> = [
   { key: "mod+d", command: "diff.toggle", when: "!terminalFocus" },
   { key: "mod+n", command: "chat.new", when: "!terminalFocus" },
   { key: "mod+shift+o", command: "chat.new", when: "!terminalFocus" },
-  { key: "mod+shift+n", command: "chat.newLocal", when: "!terminalFocus" },
+  { key: "mod+shift+n", command: "window.new", when: "desktopApp && !terminalFocus" },
+  { key: "mod+shift+l", command: "chat.newLocal", when: "!terminalFocus" },
   { key: "mod+o", command: "editor.openFavorite" },
 ];
 
@@ -365,12 +366,23 @@ function isSameKeybindingRule(left: KeybindingRule, right: KeybindingRule): bool
   );
 }
 
-function keybindingShortcutContext(rule: KeybindingRule): string | null {
+function keybindingShortcut(rule: KeybindingRule): string | null {
   const parsed = parseKeybindingShortcut(rule.key);
   if (!parsed) return null;
-  const encoded = encodeShortcut(parsed);
+  return encodeShortcut(parsed);
+}
+
+function keybindingShortcutContext(rule: KeybindingRule): string | null {
+  const encoded = keybindingShortcut(rule);
   if (!encoded) return null;
   return `${encoded}\u0000${rule.when ?? ""}`;
+}
+
+function hasSameShortcut(left: KeybindingRule, right: KeybindingRule): boolean {
+  const leftShortcut = keybindingShortcut(left);
+  const rightShortcut = keybindingShortcut(right);
+  if (!leftShortcut || !rightShortcut) return false;
+  return leftShortcut === rightShortcut;
 }
 
 function hasSameShortcutContext(left: KeybindingRule, right: KeybindingRule): boolean {
@@ -743,9 +755,14 @@ const makeKeybindings = Effect.gen(function* () {
         if (existingCommands.has(defaultRule.command)) {
           continue;
         }
-        const conflictingEntry = customConfig.find((entry) =>
-          hasSameShortcutContext(entry, defaultRule),
-        );
+        const conflictingEntry = customConfig.find((entry) => {
+          if (hasSameShortcutContext(entry, defaultRule)) {
+            return true;
+          }
+          // Keep legacy chat.newLocal on mod+shift+n from being unexpectedly shadowed
+          // when window.new is introduced into older keybindings files.
+          return defaultRule.command === "window.new" && hasSameShortcut(entry, defaultRule);
+        });
         if (conflictingEntry) {
           shortcutConflictWarnings.push({
             defaultCommand: defaultRule.command,

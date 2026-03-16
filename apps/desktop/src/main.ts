@@ -30,6 +30,7 @@ import { RotatingFileSink } from "@t3tools/shared/logging";
 import { showDesktopConfirmDialog } from "./confirmDialog";
 import { fixPath } from "./fixPath";
 import { getAutoUpdateDisabledReason, shouldBroadcastDownloadProgress } from "./updateState";
+import { resolveWindowUrlForNewWindow } from "./windowUrl";
 import {
   createInitialDesktopUpdateState,
   reduceDesktopUpdateStateOnCheckFailure,
@@ -51,6 +52,7 @@ const CONFIRM_CHANNEL = "desktop:confirm";
 const SET_THEME_CHANNEL = "desktop:set-theme";
 const CONTEXT_MENU_CHANNEL = "desktop:context-menu";
 const OPEN_EXTERNAL_CHANNEL = "desktop:open-external";
+const OPEN_WINDOW_CHANNEL = "desktop:open-window";
 const MENU_ACTION_CHANNEL = "desktop:menu-action";
 const UPDATE_STATE_CHANNEL = "desktop:update-state";
 const UPDATE_GET_STATE_CHANNEL = "desktop:update-get-state";
@@ -487,6 +489,38 @@ function registerDesktopProtocol(): void {
   desktopProtocolRegistered = true;
 }
 
+function resolveDefaultAppUrl(): string {
+  if (isDevelopment) {
+    const devServerUrl = process.env.VITE_DEV_SERVER_URL;
+    if (!devServerUrl) {
+      throw new Error("VITE_DEV_SERVER_URL is required in desktop development mode.");
+    }
+    return devServerUrl;
+  }
+
+  return `${DESKTOP_SCHEME}://app/index.html`;
+}
+
+function getWindowSourceUrl(window: BrowserWindow | null | undefined): string | null {
+  if (!window || window.isDestroyed()) {
+    return null;
+  }
+  const url = window.webContents.getURL();
+  return url.length > 0 ? url : null;
+}
+
+function openNewWindow(
+  sourceWindow: BrowserWindow | null = BrowserWindow.getFocusedWindow(),
+): void {
+  const sourceUrl = getWindowSourceUrl(
+    sourceWindow ?? mainWindow ?? BrowserWindow.getAllWindows()[0],
+  );
+  const nextWindow = createWindow({ sourceUrl });
+  if (!mainWindow) {
+    mainWindow = nextWindow;
+  }
+}
+
 function dispatchMenuAction(action: string): void {
   const existingWindow =
     BrowserWindow.getFocusedWindow() ?? mainWindow ?? BrowserWindow.getAllWindows()[0];
@@ -572,6 +606,11 @@ function configureApplicationMenu(): void {
     {
       label: "File",
       submenu: [
+        {
+          label: "New Window",
+          click: () => openNewWindow(),
+        },
+        { type: "separator" as const },
         ...(process.platform === "darwin"
           ? []
           : [
@@ -1160,6 +1199,16 @@ function registerIpcHandlers(): void {
     }
   });
 
+  ipcMain.removeHandler(OPEN_WINDOW_CHANNEL);
+  ipcMain.handle(OPEN_WINDOW_CHANNEL, async (event) => {
+    const sourceWindow =
+      BrowserWindow.fromWebContents(event.sender) ??
+      BrowserWindow.getFocusedWindow() ??
+      mainWindow ??
+      null;
+    openNewWindow(sourceWindow);
+  });
+
   ipcMain.removeHandler(UPDATE_GET_STATE_CHANNEL);
   ipcMain.handle(UPDATE_GET_STATE_CHANNEL, async () => updateState);
 
@@ -1198,7 +1247,7 @@ function getIconOption(): { icon: string } | Record<string, never> {
   return iconPath ? { icon: iconPath } : {};
 }
 
-function createWindow(): BrowserWindow {
+function createWindow(options: { sourceUrl?: string | null } = {}): BrowserWindow {
   const window = new BrowserWindow({
     width: 1100,
     height: 780,
@@ -1266,11 +1315,11 @@ function createWindow(): BrowserWindow {
     window.show();
   });
 
+  const fallbackUrl = resolveDefaultAppUrl();
+  const launchUrl = resolveWindowUrlForNewWindow(options.sourceUrl, fallbackUrl);
+  void window.loadURL(launchUrl);
   if (isDevelopment) {
-    void window.loadURL(process.env.VITE_DEV_SERVER_URL as string);
     window.webContents.openDevTools({ mode: "detach" });
-  } else {
-    void window.loadURL(`${DESKTOP_SCHEME}://app/index.html`);
   }
 
   window.on("closed", () => {

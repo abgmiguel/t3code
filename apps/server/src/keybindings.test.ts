@@ -261,6 +261,45 @@ it.layer(NodeServices.layer)("keybindings", (it) => {
       }).pipe(Effect.provide(makeKeybindingsLayer())),
   );
 
+  it.effect(
+    "skips window.new startup backfill when legacy mod+shift+n chat.newLocal exists",
+    () => {
+      const messages: string[] = [];
+      const logger = Logger.make(({ message }) => {
+        messages.push(String(message));
+      });
+
+      return Effect.gen(function* () {
+        const { keybindingsConfigPath } = yield* ServerConfig;
+        yield* writeKeybindingsConfig(keybindingsConfigPath, [
+          { key: "mod+shift+n", command: "chat.newLocal", when: "!terminalFocus" },
+        ]);
+
+        yield* Effect.gen(function* () {
+          const keybindings = yield* Keybindings;
+          yield* keybindings.syncDefaultKeybindingsOnStartup;
+        });
+
+        const persisted = yield* readKeybindingsConfig(keybindingsConfigPath);
+        const byCommand = new Map(persisted.map((entry) => [entry.command, entry]));
+        assert.equal(byCommand.get("chat.newLocal")?.key, "mod+shift+n");
+        assert.isFalse(byCommand.has("window.new"));
+        assert.isTrue(
+          messages.some((message) =>
+            message.includes("skipping default keybinding due to shortcut conflict"),
+          ),
+        );
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            makeKeybindingsLayer(),
+            Logger.layer([logger], { mergeWithExisting: false }),
+          ),
+        ),
+      );
+    },
+  );
+
   it.effect("skips conflicting default keybindings on startup and logs a detailed warning", () => {
     const messages: string[] = [];
     const logger = Logger.make(({ message }) => {

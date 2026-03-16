@@ -16,6 +16,10 @@ let instance: { api: NativeApi; transport: WsTransport } | null = null;
 const welcomeListeners = new Set<(payload: WsWelcomePayload) => void>();
 const serverConfigUpdatedListeners = new Set<(payload: ServerConfigUpdatedPayload) => void>();
 
+function isMissingEditorCommandError(error: unknown): boolean {
+  return error instanceof Error && error.message.includes("Editor command not found:");
+}
+
 /**
  * Subscribe to the server welcome message. If a welcome was already received
  * before this call, the listener fires synchronously with the cached payload.
@@ -116,8 +120,20 @@ export function createWsNativeApi(): NativeApi {
       writeFile: (input) => transport.request(WS_METHODS.projectsWriteFile, input),
     },
     shell: {
-      openInEditor: (cwd, editor) =>
-        transport.request(WS_METHODS.shellOpenInEditor, { cwd, editor }),
+      openInEditor: async (cwd, editor) => {
+        try {
+          await transport.request(WS_METHODS.shellOpenInEditor, { cwd, editor });
+        } catch (error) {
+          if (editor !== "file-manager" && isMissingEditorCommandError(error)) {
+            await transport.request(WS_METHODS.shellOpenInEditor, {
+              cwd,
+              editor: "file-manager",
+            });
+            return;
+          }
+          throw error;
+        }
+      },
       openExternal: async (url) => {
         if (window.desktopBridge) {
           const opened = await window.desktopBridge.openExternal(url);

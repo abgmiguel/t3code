@@ -97,8 +97,26 @@ const DEFAULT_BINDINGS = compile([
     command: "diff.toggle",
     whenAst: whenNot(whenIdentifier("terminalFocus")),
   },
-  { shortcut: modShortcut("o", { shiftKey: true }), command: "chat.new" },
-  { shortcut: modShortcut("n", { shiftKey: true }), command: "chat.newLocal" },
+  {
+    shortcut: modShortcut("n"),
+    command: "chat.new",
+    whenAst: whenNot(whenIdentifier("terminalFocus")),
+  },
+  {
+    shortcut: modShortcut("o", { shiftKey: true }),
+    command: "chat.new",
+    whenAst: whenNot(whenIdentifier("terminalFocus")),
+  },
+  {
+    shortcut: modShortcut("n", { shiftKey: true }),
+    command: "window.new",
+    whenAst: whenAnd(whenIdentifier("desktopApp"), whenNot(whenIdentifier("terminalFocus"))),
+  },
+  {
+    shortcut: modShortcut("l", { shiftKey: true }),
+    command: "chat.newLocal",
+    whenAst: whenNot(whenIdentifier("terminalFocus")),
+  },
   { shortcut: modShortcut("o"), command: "editor.openFavorite" },
 ]);
 
@@ -247,27 +265,60 @@ describe("shortcutLabelForCommand", () => {
 describe("chat/editor shortcuts", () => {
   it("matches chat.new shortcut", () => {
     assert.isTrue(
+      isChatNewShortcut(event({ key: "n", metaKey: true }), DEFAULT_BINDINGS, {
+        platform: "MacIntel",
+        context: { terminalFocus: false },
+      }),
+    );
+    assert.isTrue(
+      isChatNewShortcut(event({ key: "n", ctrlKey: true }), DEFAULT_BINDINGS, {
+        platform: "Linux",
+        context: { terminalFocus: false },
+      }),
+    );
+    assert.isTrue(
       isChatNewShortcut(event({ key: "o", metaKey: true, shiftKey: true }), DEFAULT_BINDINGS, {
         platform: "MacIntel",
+        context: { terminalFocus: false },
       }),
     );
     assert.isTrue(
       isChatNewShortcut(event({ key: "o", ctrlKey: true, shiftKey: true }), DEFAULT_BINDINGS, {
         platform: "Linux",
+        context: { terminalFocus: false },
       }),
     );
   });
 
   it("matches chat.newLocal shortcut", () => {
     assert.isTrue(
-      isChatNewLocalShortcut(event({ key: "n", metaKey: true, shiftKey: true }), DEFAULT_BINDINGS, {
+      isChatNewLocalShortcut(event({ key: "l", metaKey: true, shiftKey: true }), DEFAULT_BINDINGS, {
         platform: "MacIntel",
+        context: { terminalFocus: false },
       }),
     );
     assert.isTrue(
-      isChatNewLocalShortcut(event({ key: "n", ctrlKey: true, shiftKey: true }), DEFAULT_BINDINGS, {
+      isChatNewLocalShortcut(event({ key: "l", ctrlKey: true, shiftKey: true }), DEFAULT_BINDINGS, {
         platform: "Linux",
+        context: { terminalFocus: false },
       }),
+    );
+  });
+
+  it("matches window.new only when desktopApp is true", () => {
+    assert.strictEqual(
+      resolveShortcutCommand(event({ key: "n", metaKey: true, shiftKey: true }), DEFAULT_BINDINGS, {
+        platform: "MacIntel",
+        context: { terminalFocus: false, desktopApp: true },
+      }),
+      "window.new",
+    );
+    assert.notStrictEqual(
+      resolveShortcutCommand(event({ key: "n", metaKey: true, shiftKey: true }), DEFAULT_BINDINGS, {
+        platform: "MacIntel",
+        context: { terminalFocus: false, desktopApp: false },
+      }),
+      "window.new",
     );
   });
 
@@ -360,6 +411,32 @@ describe("cross-command precedence", () => {
       }),
     );
   });
+
+  it("uses desktopApp context to prefer window.new over chat.new when both shortcuts match", () => {
+    const keybindings = compile([
+      { shortcut: modShortcut("n"), command: "chat.new" },
+      {
+        shortcut: modShortcut("n"),
+        command: "window.new",
+        whenAst: whenIdentifier("desktopApp"),
+      },
+    ]);
+
+    assert.strictEqual(
+      resolveShortcutCommand(event({ key: "n", metaKey: true }), keybindings, {
+        platform: "MacIntel",
+        context: { desktopApp: true },
+      }),
+      "window.new",
+    );
+    assert.strictEqual(
+      resolveShortcutCommand(event({ key: "n", metaKey: true }), keybindings, {
+        platform: "MacIntel",
+        context: { desktopApp: false },
+      }),
+      "chat.new",
+    );
+  });
 });
 
 describe("resolveShortcutCommand", () => {
@@ -371,6 +448,30 @@ describe("resolveShortcutCommand", () => {
         platform: "Linux",
       }),
       "script.setup.run",
+    );
+  });
+
+  it("matches updated default chat/window/local mappings", () => {
+    assert.strictEqual(
+      resolveShortcutCommand(event({ key: "n", ctrlKey: true }), DEFAULT_BINDINGS, {
+        platform: "Linux",
+        context: { terminalFocus: false },
+      }),
+      "chat.new",
+    );
+    assert.strictEqual(
+      resolveShortcutCommand(event({ key: "n", ctrlKey: true, shiftKey: true }), DEFAULT_BINDINGS, {
+        platform: "Linux",
+        context: { terminalFocus: false, desktopApp: true },
+      }),
+      "window.new",
+    );
+    assert.strictEqual(
+      resolveShortcutCommand(event({ key: "l", ctrlKey: true, shiftKey: true }), DEFAULT_BINDINGS, {
+        platform: "Linux",
+        context: { terminalFocus: false },
+      }),
+      "chat.newLocal",
     );
   });
 });

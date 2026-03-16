@@ -42,7 +42,7 @@ import { isElectron } from "../env";
 import { APP_STAGE_LABEL, APP_VERSION } from "../branding";
 import { isMacPlatform, newCommandId, newProjectId, newThreadId } from "../lib/utils";
 import { useStore } from "../store";
-import { isChatNewLocalShortcut, isChatNewShortcut, shortcutLabelForCommand } from "../keybindings";
+import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
 import { derivePendingApprovals, derivePendingUserInputs } from "../session-logic";
 import { gitRemoveWorktreeMutationOptions, gitStatusQueryOptions } from "../lib/gitReactQuery";
 import { serverConfigQueryOptions } from "../lib/serverReactQuery";
@@ -1030,23 +1030,44 @@ export default function Sidebar() {
         return;
       }
 
+      const command = resolveShortcutCommand(event, keybindings, {
+        context: {
+          terminalFocus: false,
+          terminalOpen: false,
+          desktopApp: isElectron,
+        },
+      });
+      if (!command) return;
+
+      if (command === "window.new") {
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+        void window.desktopBridge?.openWindow?.();
+        return;
+      }
+
       const activeThread = routeThreadId
         ? threads.find((thread) => thread.id === routeThreadId)
         : undefined;
       const activeDraftThread = routeThreadId ? getDraftThread(routeThreadId) : null;
-      if (isChatNewLocalShortcut(event, keybindings)) {
+      if (command === "chat.newLocal") {
         const projectId =
           activeThread?.projectId ?? activeDraftThread?.projectId ?? projects[0]?.id;
         if (!projectId) return;
         event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
         void handleNewThread(projectId);
         return;
       }
 
-      if (!isChatNewShortcut(event, keybindings)) return;
+      if (command !== "chat.new") return;
       const projectId = activeThread?.projectId ?? activeDraftThread?.projectId ?? projects[0]?.id;
       if (!projectId) return;
       event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
       void handleNewThread(projectId, {
         branch: activeThread?.branch ?? activeDraftThread?.branch ?? null,
         worktreePath: activeThread?.worktreePath ?? activeDraftThread?.worktreePath ?? null,

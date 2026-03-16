@@ -320,6 +320,26 @@ describe("wsNativeApi", () => {
     });
   });
 
+  it("retries openInEditor with file-manager when editor CLI is unavailable", async () => {
+    requestMock
+      .mockRejectedValueOnce(new Error("Editor command not found: cursor"))
+      .mockResolvedValueOnce(undefined);
+
+    const { createWsNativeApi } = await import("./wsNativeApi");
+    const api = createWsNativeApi();
+
+    await api.shell.openInEditor("/tmp/project", "cursor");
+
+    expect(requestMock).toHaveBeenNthCalledWith(1, WS_METHODS.shellOpenInEditor, {
+      cwd: "/tmp/project",
+      editor: "cursor",
+    });
+    expect(requestMock).toHaveBeenNthCalledWith(2, WS_METHODS.shellOpenInEditor, {
+      cwd: "/tmp/project",
+      editor: "file-manager",
+    });
+  });
+
   it("forwards full-thread diff requests to the orchestration websocket method", async () => {
     requestMock.mockResolvedValue({ diff: "patch" });
     const { createWsNativeApi } = await import("./wsNativeApi");

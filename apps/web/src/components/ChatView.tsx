@@ -1937,6 +1937,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
       const shortcutContext = {
         terminalFocus: isTerminalFocused(),
         terminalOpen: Boolean(terminalState.terminalOpen),
+        desktopApp: isElectron,
       };
 
       const command = resolveShortcutCommand(event, keybindings, {
