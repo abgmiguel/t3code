@@ -1,13 +1,13 @@
-import { Schema } from "effect";
 import { assert, it } from "@effect/vitest";
-import { Effect } from "effect";
+import * as Schema from "effect/Schema";
+import * as Effect from "effect/Effect";
 
 import {
   KeybindingsConfig,
   KeybindingRule,
   ResolvedKeybindingRule,
   ResolvedKeybindingsConfig,
-} from "./keybindings";
+} from "./keybindings.ts";
 
 const decode = <S extends Schema.Top>(
   schema: S,
@@ -20,40 +20,7 @@ const decode = <S extends Schema.Top>(
   >;
 
 const decodeResolvedRule = Schema.decodeUnknownEffect(ResolvedKeybindingRule as never);
-
-it.effect("parses keybinding rules", () =>
-  Effect.gen(function* () {
-    const parsed = yield* decode(KeybindingRule, {
-      key: "mod+j",
-      command: "terminal.toggle",
-    });
-    assert.strictEqual(parsed.command, "terminal.toggle");
-
-    const parsedClose = yield* decode(KeybindingRule, {
-      key: "mod+w",
-      command: "terminal.close",
-    });
-    assert.strictEqual(parsedClose.command, "terminal.close");
-
-    const parsedDiffToggle = yield* decode(KeybindingRule, {
-      key: "mod+d",
-      command: "diff.toggle",
-    });
-    assert.strictEqual(parsedDiffToggle.command, "diff.toggle");
-
-    const parsedLocal = yield* decode(KeybindingRule, {
-      key: "mod+shift+n",
-      command: "chat.newLocal",
-    });
-    assert.strictEqual(parsedLocal.command, "chat.newLocal");
-
-    const parsedWindow = yield* decode(KeybindingRule, {
-      key: "mod+shift+n",
-      command: "window.new",
-    });
-    assert.strictEqual(parsedWindow.command, "window.new");
-  }),
-);
+const encodeResolvedKeybindings = Schema.encodeEffect(ResolvedKeybindingsConfig);
 
 it.effect("rejects invalid command values", () =>
   Effect.gen(function* () {
@@ -82,8 +49,9 @@ it.effect("parses keybindings array payload", () =>
     const parsed = yield* decode(KeybindingsConfig, [
       { key: "mod+j", command: "terminal.toggle" },
       { key: "mod+d", command: "terminal.split", when: "terminalFocus" },
+      { key: "mod+shift+d", command: "terminal.splitVertical", when: "terminalFocus" },
     ]);
-    assert.lengthOf(parsed, 2);
+    assert.lengthOf(parsed, 3);
   }),
 );
 
@@ -126,8 +94,83 @@ it.effect("parses resolved keybindings arrays", () =>
           modKey: true,
         },
       },
+      {
+        command: "thread.jump.3",
+        shortcut: {
+          key: "3",
+          metaKey: false,
+          ctrlKey: false,
+          shiftKey: false,
+          altKey: false,
+          modKey: true,
+        },
+      },
     ]);
-    assert.lengthOf(parsed, 1);
+    assert.lengthOf(parsed, 2);
+  }),
+);
+
+const shortcut = {
+  key: "p",
+  metaKey: false,
+  ctrlKey: false,
+  shiftKey: false,
+  altKey: false,
+  modKey: true,
+};
+
+it.effect("drops resolved rules with commands this build does not know", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decode(ResolvedKeybindingsConfig, [
+      { command: "terminal.toggle", shortcut },
+      { command: "someFuture.toggle", shortcut },
+      { command: "filePicker.toggle", shortcut },
+    ]);
+    assert.deepEqual(
+      parsed.map((rule) => rule.command),
+      ["terminal.toggle", "filePicker.toggle"],
+    );
+  }),
+);
+
+it.effect("drops resolved rules with unknown when-node types", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decode(ResolvedKeybindingsConfig, [
+      {
+        command: "terminal.toggle",
+        shortcut,
+        whenAst: { type: "xor", left: 1, right: 2 },
+      },
+      { command: "terminal.split", shortcut },
+    ]);
+    assert.deepEqual(
+      parsed.map((rule) => rule.command),
+      ["terminal.split"],
+    );
+  }),
+);
+
+it.effect("drops malformed resolved rule entries", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decode(ResolvedKeybindingsConfig, [
+      "garbage",
+      { command: "terminal.toggle", shortcut },
+      null,
+    ]);
+    assert.deepEqual(
+      parsed.map((rule) => rule.command),
+      ["terminal.toggle"],
+    );
+  }),
+);
+
+it.effect("encodes resolved keybindings to the plain wire shape", () =>
+  Effect.gen(function* () {
+    const rules = [{ command: "terminal.toggle" as const, shortcut }];
+    const encoded = yield* encodeResolvedKeybindings(rules);
+    assert.deepEqual(encoded, rules);
+    const roundTripped = yield* decode(ResolvedKeybindingsConfig, encoded);
+    assert.deepEqual(roundTripped, rules);
   }),
 );
 
