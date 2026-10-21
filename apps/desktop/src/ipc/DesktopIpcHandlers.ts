@@ -1,4 +1,6 @@
 import * as Effect from "effect/Effect";
+import { transcribeDictation, cancelDictation, prepareDictation } from "./methods/dictation.ts";
+import { disposeLocalDictation } from "../dictation/localTranscription.ts";
 
 import { receiveProviderAuthCallback, cancelProviderAuthCallback } from "./methods/providerAuth.ts";
 import * as DesktopIpc from "./DesktopIpc.ts";
@@ -86,6 +88,10 @@ import {
 
 export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers")(function* () {
   const ipc = yield* DesktopIpc.DesktopIpc;
+  yield* Effect.addFinalizer(() => Effect.sync(disposeLocalDictation));
+  yield* ipc.handle(prepareDictation);
+  yield* ipc.handle(transcribeDictation);
+  yield* ipc.handle(cancelDictation);
   yield* installNotificationBadge();
   yield* PreviewIpc.installPreviewEventForwarding();
 

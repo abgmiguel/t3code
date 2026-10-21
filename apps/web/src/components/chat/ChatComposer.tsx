@@ -1,6 +1,7 @@
 import { formatProviderSkillDisplayName } from "@t3tools/shared/inlineSkills";
 import { useComposerTypingGuard } from "./useComposerTypingGuard";
 import { insertAttachmentReferencesForDraft } from "./composerAttachmentReferences";
+import { DesktopDictation } from "./DesktopDictation";
 import { DESKTOP_PASTE_AS_TEXT_EVENT } from "../../lib/desktopPasteAsText";
 import { runtimeModeConfig, runtimeModeOptions as runtimeModes } from "./runtimeModeConfig";
 import { isLocalEnvironmentDisabled } from "../../localEnvironment";
@@ -2354,7 +2355,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     selectedProviderEntry?.snapshot,
     selectedModel,
   );
+  const [dictationBusy, setDictationBusy] = useState(false);
   const sendDisabledReason =
+    (dictationBusy ? "Finish or cancel voice dictation before sending." : null) ??
     externalSendDisabledReason ??
     (multipleModelSelections?.length === 0 ? "Select at least one model." : null) ??
     (activePendingProgress
@@ -7203,6 +7206,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                                   : "Ask anything, @tag files/folders, $use skills, or / for commands"
                     }
                     disabled={
+                      dictationBusy ||
                       isConnecting ||
                       isComposerApprovalState ||
                       projectSelectionRequired ||
@@ -7322,6 +7326,32 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       </Tooltip>
                     </>
                   ) : null}
+                  <DesktopDictation
+                    key={attachmentTargetKey}
+                    ownerKey={attachmentTargetKey}
+                    disabled={
+                      isConnecting ||
+                      isSendBusy ||
+                      isComposerApprovalState ||
+                      projectSelectionRequired ||
+                      pendingUserInputs.length > 0
+                    }
+                    onBusyChange={setDictationBusy}
+                    readDraft={() => ({
+                      ownerKey: attachmentTargetKey,
+                      text: composerEditorRef.current?.readSnapshot().value ?? promptRef.current,
+                      selection: composerEditorRef.current?.readSelectionRange() ?? {
+                        start: promptRef.current.length,
+                        end: promptRef.current.length,
+                      },
+                      revision: 0,
+                    })}
+                    commitDraft={(text, cursor) => {
+                      const contextIds = collectInlineContextIds(text);
+                      onPromptChangeStable(text, cursor, cursor, false, contextIds);
+                      requestAnimationFrame(() => composerEditorRef.current?.focusAt(cursor));
+                    }}
+                  />
                   <ComposerFooterPrimaryActions
                     compact={isComposerResting || isComposerPrimaryActionsCompact}
                     canOperateThread={canOperateThread}

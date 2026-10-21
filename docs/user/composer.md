@@ -173,6 +173,17 @@ Stashes containing uploaded files must be restored in their original environment
 Those files are retained for 24 hours. After an upload expires, restore the prompt
 and use **Attach again** or remove the missing file before sending.
 
+## Local voice input on Mac
+
+In the Mac desktop app, use the microphone to record a prompt, then stop to
+transcribe it into your draft. Review and edit the words before sending.
+Cancel discards the recording and keeps your draft. Switching threads also
+cancels voice input. Recordings can be up to five minutes long.
+
+Speech stays on your Mac, including when connected to a remote environment.
+The local speech runtime must be installed first; see the fork's
+[Mac dictation setup](../operations/local-dictation.md).
+
 ## Voice input on iPhone
 
 On supported iPhones with iOS 26 or later, use the composer's microphone to record,
