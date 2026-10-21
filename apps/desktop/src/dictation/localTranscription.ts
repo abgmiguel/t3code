@@ -60,7 +60,10 @@ export function parseDictationResult(value: unknown): string {
     throw new LocalDictationError("No speech detected. Try again closer to the microphone.");
   if (text.length > 20000)
     throw new LocalDictationError("This transcript is too long. Try a shorter recording.");
-  return text;
+  return text.replace(
+    /(^|[\s(])(at|around|after|before|until|from|since|by|had|ate|drank|fed|took|for)(?=\d)(\d+(?:[.:,]\d+)*)(?=$|[\s,!?;:)]|\.(?![\p{L}\p{N}]))/giu,
+    "$1$2 $3",
+  );
 }
 
 export async function transcribeLocally(

@@ -52,6 +52,19 @@ describe("local dictation boundary", () => {
     }
   });
 
+  it("separates attached numbers after ordinary words without splitting identifiers", () => {
+    for (const [raw, expected] of [
+      ["The baby ate at245.", "The baby ate at 245."],
+      ["Baby drank90 ml around230.", "Baby drank 90 ml around 230."],
+      [
+        "GPT5 B12 ESP32 https://at245.com at245@example.com",
+        "GPT5 B12 ESP32 https://at245.com at245@example.com",
+      ],
+    ]) {
+      expect(parseDictationResult({ rows: [{ text: raw }] })).toBe(expected);
+    }
+  });
+
   it("reuses one native process for consecutive recordings and removes temporary audio", async () => {
     const directory = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "dictation test "));
     try {
