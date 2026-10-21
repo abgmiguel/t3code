@@ -1,3 +1,8 @@
+import * as ProviderSessionManager from "./ProviderSessionManager.ts";
+import * as Option from "effect/Option";
+import * as ProviderThreadArchiveService from "./ProviderThreadArchiveService.ts";
+import * as RuntimePolicy from "./RuntimePolicy.ts";
+import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 import { assert, it } from "@effect/vitest";
 import {
   CommandId,
@@ -1229,5 +1234,146 @@ it.effect("explicit settle clears snooze atomically and stays idempotent after r
     } as const;
     assert.deepInclude(yield* projections.getThreadShell(threadId), active);
     assert.deepInclude((yield* projections.getThreadProjection(threadId)).thread, active);
+  }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("queues native archive synchronization when settling a stopped thread", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const outbox = yield* EffectOutbox.EffectOutboxV2;
+    const threadId = ThreadId.make("thread:native-archive");
+    yield* orchestrator.dispatch({
+      type: "thread.create",
+      commandId: CommandId.make("create-native-archive"),
+      threadId,
+      projectId: ProjectId.make("project:native-archive"),
+      title: "Archive in provider",
+      modelSelection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      createdBy: "user",
+      creationSource: "web",
+    });
+    const commandId = CommandId.make("settle-native-archive");
+    yield* orchestrator.dispatch({ type: "thread.settle", commandId, threadId });
+    assert.includeDeepMembers(
+      (yield* outbox.listByCommandId(commandId)).map((effect) => effect.request),
+      [{ type: "provider-threads.sync-archive" }],
+    );
+  }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect.each([false, true])("synchronizes native archives with a live session: %s", (live) =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const threadId = ThreadId.make("thread:archive-service");
+    yield* orchestrator.dispatch({
+      type: "thread.create",
+      commandId: CommandId.make("create-archive-service"),
+      threadId,
+      projectId: ProjectId.make("project:archive-service"),
+      title: "Provider archive",
+      modelSelection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      createdBy: "user",
+      creationSource: "web",
+    });
+    const now = yield* DateTime.now;
+    yield* projections.apply({
+      id: EventId.make("archive-service:provider-thread"),
+      type: "provider-thread.updated",
+      threadId,
+      occurredAt: now,
+      payload: {
+        id: ProviderThreadId.make("provider-thread:archive-service"),
+        driver: adapter.driver,
+        providerInstanceId: instanceId,
+        providerSessionId: live ? ProviderSessionId.make("session:archive-service") : null,
+        appThreadId: threadId,
+        ownerNodeId: null,
+        nativeThreadRef: {
+          driver: adapter.driver,
+          nativeId: "native-archive-service",
+          strength: "strong",
+        },
+        nativeConversationHeadRef: null,
+        status: "idle",
+        firstRunOrdinal: 1,
+        lastRunOrdinal: 1,
+        handoffIds: [],
+        forkedFrom: null,
+        createdAt: now,
+        updatedAt: now,
+      },
+    });
+    const calls: Array<{ nativeId: string | null | undefined; archived: boolean }> = [];
+    const recordArchive = (input: {
+      providerThread: { nativeThreadRef: { nativeId: string | null } | null };
+      archived: boolean;
+    }) =>
+      Effect.sync(() => {
+        calls.push({
+          nativeId: input.providerThread.nativeThreadRef?.nativeId,
+          archived: input.archived,
+        });
+      });
+    const liveRuntime: Partial<ProviderAdapter.ProviderAdapterV2SessionRuntime> = {
+      setThreadArchived: recordArchive,
+    };
+    const layerArchive = ProviderThreadArchiveService.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.succeed(ProjectionStore.ProjectionStoreV2, projections),
+          ProviderAdapterRegistry.layerFromAdapters([
+            {
+              ...adapter,
+              setThreadArchived: live
+                ? () => Effect.die("Use the existing session")
+                : recordArchive,
+            },
+          ]),
+          RuntimePolicy.layer,
+          Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
+            get: () =>
+              Effect.succeed(
+                live
+                  ? Option.some(liveRuntime as ProviderAdapter.ProviderAdapterV2SessionRuntime)
+                  : Option.none(),
+              ),
+          }),
+          ThreadCommandExecutor.layer,
+        ),
+      ),
+    );
+    yield* Effect.gen(function* () {
+      const archives = yield* ProviderThreadArchiveService.ProviderThreadArchiveService;
+      yield* orchestrator.dispatch({
+        type: "thread.settle",
+        commandId: CommandId.make("settle-archive-service"),
+        threadId,
+      });
+      assert.lengthOf(
+        (yield* projections.getThreadRecords(threadId, ["providerThreads"])).providerThreads,
+        1,
+      );
+      yield* archives.sync(threadId);
+      yield* orchestrator.dispatch({
+        type: "thread.unsettle",
+        commandId: CommandId.make("unsettle-archive-service"),
+        threadId,
+        reason: "user",
+      });
+      yield* archives.sync(threadId);
+      assert.deepEqual(calls, [
+        { nativeId: "native-archive-service", archived: true },
+        { nativeId: "native-archive-service", archived: false },
+      ]);
+    }).pipe(Effect.provide(Layer.fresh(layerArchive)));
   }).pipe(Effect.provide(layerTest)),
 );

@@ -1033,14 +1033,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         },
       )
       .pipe(
-        Effect.map((records): OrchestrationV2ThreadProjection => ({
-          ...records,
-          checkpoints: [],
-          plans: [],
-          contextHandoffs: [],
-          visibleTurnItems: [],
-          updatedAt: records.thread.updatedAt,
-        })),
+        Effect.map(
+          (records): OrchestrationV2ThreadProjection => ({
+            ...records,
+            checkpoints: [],
+            plans: [],
+            contextHandoffs: [],
+            visibleTurnItems: [],
+            updatedAt: records.thread.updatedAt,
+          }),
+        ),
         Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause })),
       );
 
@@ -3714,6 +3716,24 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           }),
         { concurrency: 1, discard: true },
       );
+    }
+
+    if (
+      command.type === "thread.settle" ||
+      command.type === "thread.archive" ||
+      command.type === "thread.unsettle" ||
+      command.type === "thread.unarchive" ||
+      (command.type === "thread.pin" && thread.settledOverride === "settled")
+    ) {
+      yield* Ref.update(effects, (existing) => [
+        ...existing,
+        {
+          id: `effect:${command.commandId}:provider-threads.sync-archive`,
+          commandId: command.commandId,
+          threadId: command.threadId,
+          request: { type: "provider-threads.sync-archive" },
+        } satisfies PendingOrchestrationEffectV2,
+      ]);
     }
 
     if (command.type === "thread.archive") {

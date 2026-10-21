@@ -47,6 +47,9 @@ and worktree while you stay in the new thread composer. This requires a Git proj
 
 Pin a thread from its menu to keep it above your active work.
 
+Settling or archiving a Codex thread also archives its conversation in Codex. Making the thread
+active again restores it in Codex.
+
 On web and desktop, unpinning, settling, snoozing, and archiving a thread each show
 a notification with **Undo** for five seconds. Undo restores the thread's previous
 state, including its pinned position, and reopens an archived thread you were

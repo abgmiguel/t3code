@@ -2020,6 +2020,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       Effect.void,
     onRequest: (method: string, params: unknown) => Effect.Effect<void> = () => Effect.void,
     readChildMetadata?: Parameters<typeof withCodexReplayChildMetadata>[2],
+    nextTranscript?: CodexReplay.CodexAppServerReplayTranscript,
   ) =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
@@ -2027,9 +2028,11 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       const serverConfig = yield* makeReplayServerConfig(transcript.scenario).pipe(Effect.orDie);
       const continuationRequests: Array<ProviderContinuationRequests.ProviderContinuationRequest> =
         [];
+      let openCount = 0;
       const clientFactory: CodexAdapterV2.CodexAppServerClientFactoryShape = {
-        open: (openInput) =>
-          Layer.build(CodexReplay.layerReplay(transcript)).pipe(
+        open: (openInput) => {
+          const openTranscript = openCount++ === 0 ? transcript : (nextTranscript ?? transcript);
+          return Layer.build(CodexReplay.layerReplay(openTranscript)).pipe(
             Effect.mapError(
               (cause) =>
                 new ProviderAdapter.ProviderAdapterOpenSessionError({
@@ -2041,7 +2044,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             Effect.flatMap((context) =>
               Effect.service(CodexClient.CodexAppServerClient).pipe(
                 Effect.map((client) =>
-                  withCodexReplayChildMetadata(client, transcript, readChildMetadata),
+                  withCodexReplayChildMetadata(client, openTranscript, readChildMetadata),
                 ),
                 Effect.map(
                   (client) =>
@@ -2056,7 +2059,8 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                 Effect.provide(context),
               ),
             ),
-          ),
+          );
+        },
       };
       const adapter = yield* CodexAdapterV2.makeCodexAdapterV2({
         instanceId: CodexAdapterV2.CODEX_DEFAULT_INSTANCE_ID,
@@ -2124,6 +2128,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           > => event.type === "subagent.updated",
         );
       return {
+        adapter,
         runtime,
         providerThread,
         threadId,
@@ -2395,6 +2400,139 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           },
         },
       ]);
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+      ),
+    ),
+  );
+
+  it.effect.each([
+    { archived: true, response: "success" },
+    { archived: false, response: "success" },
+    { archived: true, response: "already archived" },
+    { archived: true, response: "missing" },
+    { archived: false, response: "already active" },
+    { archived: false, response: "active writer" },
+  ] as const)("sets native archive state: $archived, $response", ({ archived, response }) =>
+    Effect.gen(function* () {
+      const nativeThreadId = "archive-thread";
+      const method = archived ? "thread/archive" : "thread/unarchive";
+      const preamble = codexReplayPreamble({
+        nativeThreadId,
+        nativeTurnId: "unused",
+        prompt: "unused",
+      });
+      const startFrame = preamble[4]!;
+      assert(startFrame.type === "emit_inbound");
+      const thread = (startFrame.frame as { result: { thread: unknown } }).result.thread;
+      const errorMessage =
+        response === "active writer"
+          ? `thread ${nativeThreadId} already has an active writer`
+          : response === "already active"
+            ? `no archived rollout found for thread id ${nativeThreadId}`
+            : `no rollout found for thread id ${nativeThreadId}`;
+      const checksArchive = response === "already archived" || response === "missing";
+      const transcript = makeCodexReplayTranscript({
+        scenario: "archive-thread",
+        entries: [
+          ...preamble.slice(0, 3),
+          {
+            type: "expect_outbound",
+            label: method,
+            frame: { id: 2, method, params: { threadId: nativeThreadId } },
+          },
+          {
+            type: "emit_inbound",
+            label: method,
+            frame:
+              response === "success"
+                ? { id: 2, result: archived ? {} : { thread } }
+                : { id: 2, error: { code: -32600, message: errorMessage } },
+          },
+          ...(checksArchive
+            ? [
+                {
+                  type: "expect_outbound" as const,
+                  label: "thread/list",
+                  frame: {
+                    id: 3,
+                    method: "thread/list",
+                    params: { archived: true, cursor: null, limit: 100 },
+                  },
+                },
+                {
+                  type: "emit_inbound" as const,
+                  label: "thread/list",
+                  frame: {
+                    id: 3,
+                    result: { data: response === "missing" ? [] : [thread], nextCursor: null },
+                  },
+                },
+              ]
+            : []),
+        ],
+      });
+      const requests: Array<string> = [];
+      const harness = yield* makeCodexReplayHarness(
+        makeCodexReplayTranscript({
+          scenario: "archive-thread-setup",
+          entries: preamble.slice(0, 5),
+        }),
+        () => Effect.void,
+        (method) => Effect.sync(() => requests.push(method)),
+        undefined,
+        transcript,
+      );
+      requests.length = 0;
+      const operation = harness.adapter.setThreadArchived!({
+        threadId: harness.threadId,
+        providerSessionId: ProviderSessionId.make("provider-session:archive-operation"),
+        modelSelection: CODEX_TEST_MODEL_SELECTION,
+        runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
+        providerThread: harness.providerThread,
+        archived,
+      });
+      if (response === "missing") {
+        assert.equal((yield* Effect.flip(operation))._tag, "ProviderAdapterProtocolError");
+      } else {
+        yield* operation;
+      }
+      assert.deepEqual(requests, ["initialize", method, ...(checksArchive ? ["thread/list"] : [])]);
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+      ),
+    ),
+  );
+
+  it.effect("archives a native thread through its existing session", () =>
+    Effect.gen(function* () {
+      const nativeThreadId = "live-archive-thread";
+      const preamble = codexReplayPreamble({
+        nativeThreadId,
+        nativeTurnId: "unused",
+        prompt: "unused",
+      });
+      const transcript = makeCodexReplayTranscript({
+        scenario: "live-archive-thread",
+        entries: [
+          ...preamble.slice(0, 5),
+          {
+            type: "expect_outbound",
+            label: "archive",
+            frame: { id: 3, method: "thread/archive", params: { threadId: nativeThreadId } },
+          },
+          { type: "emit_inbound", label: "archive", frame: { id: 3, result: {} } },
+        ],
+      });
+      const harness = yield* makeCodexReplayHarness(transcript);
+      yield* harness.runtime.setThreadArchived!({
+        providerThread: harness.providerThread,
+        archived: true,
+      });
     }).pipe(
       Effect.scoped,
       Effect.provide(
@@ -4206,15 +4344,17 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           scenario,
           entries: [
             ...codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt }),
-            ...deltas.map((delta, index): CodexReplay.CodexAppServerReplayEntry => ({
-              type: "emit_inbound",
-              label: `item/plan/delta/${index}`,
-              afterMs: 20,
-              frame: {
-                method: "item/plan/delta",
-                params: { threadId: nativeThreadId, turnId: nativeTurnId, itemId: "plan", delta },
-              },
-            })),
+            ...deltas.map(
+              (delta, index): CodexReplay.CodexAppServerReplayEntry => ({
+                type: "emit_inbound",
+                label: `item/plan/delta/${index}`,
+                afterMs: 20,
+                frame: {
+                  method: "item/plan/delta",
+                  params: { threadId: nativeThreadId, turnId: nativeTurnId, itemId: "plan", delta },
+                },
+              }),
+            ),
             {
               type: "emit_inbound",
               label: "item/completed/plan",

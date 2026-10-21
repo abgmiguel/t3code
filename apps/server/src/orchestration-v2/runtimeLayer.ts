@@ -1,3 +1,4 @@
+import * as ProviderThreadArchiveService from "./ProviderThreadArchiveService.ts";
 import * as UsageLimitRecoveryWorker from "./UsageLimitRecoveryWorker.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as Layer from "effect/Layer";
@@ -309,6 +310,17 @@ const layerThreadTitleRegenerationProvided = ThreadTitleRegenerationService.laye
 const layerEffectExecutorProvided = EffectWorker.layerExecutor.pipe(
   Layer.provide(
     Layer.mergeAll(
+      ProviderThreadArchiveService.layer.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            layerProviderAdapterRegistryProvided,
+            layerRuntimePolicyProvided,
+            ProjectionStore.layer,
+            ThreadCommandExecutor.layer,
+            layerProviderSessionManagerProvided,
+          ),
+        ),
+      ),
       layerRunFinalizationServiceProvided,
       layerCheckpointRollbackServiceProvided,
       layerProviderSessionManagerProvided,

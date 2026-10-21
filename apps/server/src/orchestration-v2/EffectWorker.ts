@@ -1,3 +1,4 @@
+import * as ProviderThreadArchiveService from "./ProviderThreadArchiveService.ts";
 import { CommandId } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
@@ -74,6 +75,7 @@ export class OrchestrationEffectExecutorV2 extends Context.Service<
 export const layerExecutor: Layer.Layer<
   OrchestrationEffectExecutorV2,
   never,
+  | ProviderThreadArchiveService.ProviderThreadArchiveService
   | ProviderSessionManager.ProviderSessionManagerV2
   | RunFinalizationService.RunFinalizationService
   | CheckpointRollbackService.CheckpointRollbackServiceV2
@@ -86,6 +88,7 @@ export const layerExecutor: Layer.Layer<
 > = Layer.effect(
   OrchestrationEffectExecutorV2,
   Effect.gen(function* () {
+    const providerThreadArchive = yield* ProviderThreadArchiveService.ProviderThreadArchiveService;
     const runFinalization = yield* RunFinalizationService.RunFinalizationService;
     const resourceCleanup = yield* ResourceCleanupService.ResourceCleanupService;
     const checkpointRollback = yield* CheckpointRollbackService.CheckpointRollbackServiceV2;
@@ -101,6 +104,17 @@ export const layerExecutor: Layer.Layer<
       execute: (effect, options) => {
         const willRetry = options?.willRetry ?? false;
         switch (effect.request.type) {
+          case "provider-threads.sync-archive":
+            return providerThreadArchive.sync(effect.threadId).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationEffectExecutionError({
+                    effectId: effect.id,
+                    effectType: effect.request.type,
+                    cause,
+                  }),
+              ),
+            );
           case "provider-runtime.continue": {
             const sourceRunId = effect.request.sourceRunId;
             return continueRestartedRun({ threadId: effect.threadId, sourceRunId }).pipe(

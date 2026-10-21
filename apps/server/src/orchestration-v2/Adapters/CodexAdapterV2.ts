@@ -844,6 +844,67 @@ const getNativeThreadId = Effect.fn("CodexAdapterV2.getNativeThreadId")(function
   return nativeThreadId;
 });
 
+const setCodexThreadArchived = Effect.fn("CodexAdapterV2.setCodexThreadArchived")(
+  function* (
+    client: CodexClient.CodexAppServerClient["Service"],
+    input: { readonly providerThread: OrchestrationV2ProviderThread; readonly archived: boolean },
+  ) {
+    const nativeThreadId = yield* getNativeThreadId(input.providerThread);
+    yield* client
+      .request(input.archived ? "thread/archive" : "thread/unarchive", {
+        threadId: nativeThreadId,
+      })
+      .pipe(
+        Effect.catchTags({
+          CodexAppServerRequestError: (error) =>
+            Effect.gen(function* () {
+              if (error.code !== -32600) return yield* error;
+              if (
+                !input.archived &&
+                (error.errorMessage ===
+                  `no archived rollout found for thread id ${nativeThreadId}` ||
+                  error.errorMessage === `thread ${nativeThreadId} already has an active writer`)
+              )
+                return;
+              if (
+                !input.archived ||
+                error.errorMessage !== `no rollout found for thread id ${nativeThreadId}`
+              ) {
+                return yield* error;
+              }
+              // Archive retries must distinguish an archived thread from a missing rollout.
+              let cursor: string | null = null;
+              do {
+                const page: CodexSchema.V2ThreadListResponse = yield* client.request(
+                  "thread/list",
+                  {
+                    archived: true,
+                    cursor,
+                    limit: 100,
+                  },
+                );
+                if (page.data.some((thread) => thread.id === nativeThreadId)) return;
+                cursor = page.nextCursor ?? null;
+              } while (cursor !== null);
+              return yield* error;
+            }),
+        }),
+      );
+  },
+  (effect, _client, input) =>
+    effect.pipe(
+      Effect.timeout("10 seconds"),
+      Effect.mapError(
+        (cause) =>
+          new ProviderAdapter.ProviderAdapterProtocolError({
+            driver: CODEX_PROVIDER,
+            detail: `Failed to update Codex archive state for provider thread ${input.providerThread.id}`,
+            cause: normalizeCodexCause(cause),
+          }),
+      ),
+    ),
+);
+
 function providerThreadFromCodexThread(input: {
   readonly appThreadId: ThreadId | null;
   readonly idAllocator: IdAllocator.IdAllocatorV2["Service"];
@@ -1720,6 +1781,40 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
     driver: CODEX_PROVIDER,
     getCapabilities: () => Effect.succeed(CodexProviderCapabilitiesV2),
     planSelectionTransition: () => Effect.succeed(turnScopedSelectionTransition()),
+    setThreadArchived: Effect.fn("CodexAdapterV2.setThreadArchived")(
+      function* (input) {
+        const resolvedRuntime =
+          adapterOptions.resolveRuntime === undefined
+            ? undefined
+            : yield* adapterOptions.resolveRuntime;
+        const client = yield* clientFactory.open({
+          instanceId: adapterOptions.instanceId,
+          threadId: input.threadId,
+          providerSessionId: input.providerSessionId,
+          runtimePolicy: input.runtimePolicy,
+          settings: resolvedRuntime?.config ?? adapterOptions.settings,
+          environment: resolvedRuntime?.environment ?? adapterOptions.environment,
+        });
+        yield* client.request("initialize", {
+          clientInfo: buildCodexInitializeParams().clientInfo,
+          capabilities: CODEX_CLIENT_CAPABILITIES,
+        });
+        yield* client.notify("initialized", undefined);
+        yield* setCodexThreadArchived(client, input);
+      },
+      (effect, input) =>
+        effect.pipe(
+          Effect.timeout("10 seconds"),
+          Effect.mapError(
+            (cause) =>
+              new ProviderAdapter.ProviderAdapterProtocolError({
+                driver: CODEX_PROVIDER,
+                detail: `Failed to update Codex archive state for provider thread ${input.providerThread.id}`,
+                cause: normalizeCodexCause(cause),
+              }),
+          ),
+        ),
+    ),
     openSession: Effect.fn("CodexAdapterV2.openSession")(
       function* (input) {
         const scope = yield* Scope.Scope;
@@ -6618,15 +6713,16 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   }),
                 ),
               ),
-              Effect.map((response): OrchestrationV2ProviderThread =>
-                providerThreadFromCodexThread({
-                  appThreadId: threadInput.threadId,
-                  idAllocator,
-                  ownerNodeId: null,
-                  providerSessionId: input.providerSessionId,
-                  providerInstanceId: adapterOptions.instanceId,
-                  thread: response.thread,
-                }),
+              Effect.map(
+                (response): OrchestrationV2ProviderThread =>
+                  providerThreadFromCodexThread({
+                    appThreadId: threadInput.threadId,
+                    idAllocator,
+                    ownerNodeId: null,
+                    providerSessionId: input.providerSessionId,
+                    providerInstanceId: adapterOptions.instanceId,
+                    thread: response.thread,
+                  }),
               ),
               Effect.mapError(
                 (cause) =>
@@ -6828,6 +6924,21 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     }),
                 ),
               ),
+          ),
+          setThreadArchived: Effect.fn("CodexAdapterV2.session.setThreadArchived")(
+            function* (archiveInput) {
+              yield* ensureInitialized;
+              yield* setCodexThreadArchived(client, archiveInput);
+            },
+            Effect.mapError((cause) =>
+              cause._tag === "ProviderAdapterProtocolError"
+                ? cause
+                : new ProviderAdapter.ProviderAdapterProtocolError({
+                    driver: CODEX_PROVIDER,
+                    detail: "Failed to initialize Codex to update archive state.",
+                    cause: normalizeCodexCause(cause),
+                  }),
+            ),
           ),
           // Dropping this connection's subscription lets the shared app-server
           // shut the native thread (and its MCP servers) down once it is idle.

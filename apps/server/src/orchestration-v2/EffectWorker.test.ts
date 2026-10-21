@@ -1,3 +1,4 @@
+import * as ProviderThreadArchiveService from "./ProviderThreadArchiveService.ts";
 import { assert, it } from "@effect/vitest";
 import {
   CheckpointId,
@@ -91,6 +92,9 @@ function layerExecutorFor(input: {
 }) {
   const record = (event: string) => Ref.update(input.events, (events) => [...events, event]);
   const layerDependencies = Layer.mergeAll(
+    Layer.succeed(ProviderThreadArchiveService.ProviderThreadArchiveService, {
+      sync: () => record("sync-archive"),
+    }),
     Layer.succeed(
       ProviderTurnControlService.ProviderTurnControlServiceV2,
       ProviderTurnControlService.ProviderTurnControlServiceV2.of({
@@ -979,4 +983,19 @@ it.effect.each(["confirmed", "unconfirmed", "failed"] as const)(
         outcome === "confirmed" ? ["stop-child", "settle-child"] : ["stop-child"],
       );
     }),
+);
+
+it.effect("executes durable provider archive synchronization", () =>
+  Effect.gen(function* () {
+    const now = yield* DateTime.now;
+    const events = yield* Ref.make<ReadonlyArray<string>>([]);
+    yield* Effect.gen(function* () {
+      const executor = yield* EffectWorker.OrchestrationEffectExecutorV2;
+      yield* executor.execute({
+        ...restartEffect(now, { type: "detach" }),
+        request: { type: "provider-threads.sync-archive" },
+      });
+    }).pipe(Effect.provide(layerExecutorFor({ events })));
+    assert.deepEqual(yield* Ref.get(events), ["sync-archive"]);
+  }),
 );

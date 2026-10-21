@@ -1,3 +1,4 @@
+import * as ProviderThreadArchiveService from "../ProviderThreadArchiveService.ts";
 import * as OtelEnvironment from "@t3tools/shared/otelEnvironment";
 import { DEFAULT_SIGNAL_EXPORT } from "@t3tools/shared/observability";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -492,6 +493,17 @@ export function layerWithRegistry<Error>(
   const layerEffectExecutorProvided = EffectWorker.layerExecutor.pipe(
     Layer.provide(
       Layer.mergeAll(
+        ProviderThreadArchiveService.layer.pipe(
+          Layer.provide(
+            Layer.mergeAll(
+              layerProvidedRegistry,
+              layerRuntime,
+              layerStores,
+              ThreadCommandExecutor.layer,
+              layerProviderSessionManagerProvided,
+            ),
+          ),
+        ),
         layerRunFinalizationServiceProvided,
         layerCheckpointRollbackServiceProvided,
         layerProviderSessionManagerProvided,

@@ -29,6 +29,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { forkParked } from "../serverActivation.ts";
 
 export const OrchestrationEffectRequestV2 = Schema.Union([
+  Schema.Struct({ type: Schema.Literal("provider-threads.sync-archive") }),
   Schema.Struct({
     type: Schema.Literal("provider-runtime.continue"),
     sourceRunId: RunId,
@@ -121,6 +122,7 @@ export const OrchestrationEffectRequestV2 = Schema.Union([
 export type OrchestrationEffectRequestV2 = typeof OrchestrationEffectRequestV2.Type;
 
 export const REPLAY_SAFE_EFFECT_TYPES_AFTER_PROCESS_LOSS = [
+  "provider-threads.sync-archive",
   "provider-runtime.continue",
   "provider-session.detach",
   "provider-thread.rollback",
@@ -277,21 +279,23 @@ const decodeRequest = Schema.decodeUnknownEffect(
 
 const rowToEffect = (row: EffectRow) =>
   decodeRequest(row.payload_json).pipe(
-    Effect.map((request): OrchestrationEffectV2 => ({
-      id: row.effect_id,
-      commandId: CommandId.make(row.command_id),
-      threadId: ThreadId.make(row.thread_id),
-      request,
-      status: row.status as OrchestrationEffectStatusV2,
-      attemptCount: row.attempt_count,
-      availableAt: row.available_at,
-      leaseOwner: row.lease_owner,
-      leaseExpiresAt: row.lease_expires_at,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-      completedAt: row.completed_at,
-      lastError: row.last_error,
-    })),
+    Effect.map(
+      (request): OrchestrationEffectV2 => ({
+        id: row.effect_id,
+        commandId: CommandId.make(row.command_id),
+        threadId: ThreadId.make(row.thread_id),
+        request,
+        status: row.status as OrchestrationEffectStatusV2,
+        attemptCount: row.attempt_count,
+        availableAt: row.available_at,
+        leaseOwner: row.lease_owner,
+        leaseExpiresAt: row.lease_expires_at,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+        completedAt: row.completed_at,
+        lastError: row.last_error,
+      }),
+    ),
   );
 
 export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = Layer.effect(
