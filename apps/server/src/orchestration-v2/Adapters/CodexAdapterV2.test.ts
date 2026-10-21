@@ -4344,17 +4344,15 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           scenario,
           entries: [
             ...codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt }),
-            ...deltas.map(
-              (delta, index): CodexReplay.CodexAppServerReplayEntry => ({
-                type: "emit_inbound",
-                label: `item/plan/delta/${index}`,
-                afterMs: 20,
-                frame: {
-                  method: "item/plan/delta",
-                  params: { threadId: nativeThreadId, turnId: nativeTurnId, itemId: "plan", delta },
-                },
-              }),
-            ),
+            ...deltas.map((delta, index): CodexReplay.CodexAppServerReplayEntry => ({
+              type: "emit_inbound",
+              label: `item/plan/delta/${index}`,
+              afterMs: 20,
+              frame: {
+                method: "item/plan/delta",
+                params: { threadId: nativeThreadId, turnId: nativeTurnId, itemId: "plan", delta },
+              },
+            })),
             {
               type: "emit_inbound",
               label: "item/completed/plan",
