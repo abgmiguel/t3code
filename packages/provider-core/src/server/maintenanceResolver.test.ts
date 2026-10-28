@@ -14,6 +14,7 @@ import * as Fiber from "effect/Fiber";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import * as HttpClient from "effect/http/HttpClient";
+import * as HttpClientResponse from "effect/http/HttpClientResponse";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as ProviderLatestVersions from "./ProviderLatestVersions.ts";
 import {
@@ -425,6 +426,98 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
       isCommandPath: isNativeTestCommandPath("/.local/bin/claude"),
     },
   };
+  it.effect.each(["configured", "default"] as const)(
+    "checks native Claude against its selected stable channel in the %s home",
+    (homeKind) =>
+      Effect.gen(function* () {
+        const tempDir = yield* makeTempDir("t3-claude-stable");
+        const configDir = homeKind === "default" ? NodePath.join(tempDir, ".claude") : tempDir;
+        NodeFS.mkdirSync(configDir, { recursive: true });
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => NodeFS.rmSync(tempDir, { recursive: true, force: true })),
+        );
+        NodeFS.writeFileSync(
+          NodePath.join(configDir, "settings.json"),
+          JSON.stringify({ autoUpdatesChannel: "stable" }),
+        );
+        const capabilities = yield* resolvePackageManagedProviderMaintenance(claudeUpdate, {
+          binaryPath: "claude",
+          resolvedCommandPath: "/home/me/.local/bin/claude",
+          realCommandPath: "/home/me/.local/share/claude/versions/2.1.308",
+          env: homeKind === "configured" ? { CLAUDE_CONFIG_DIR: configDir } : {},
+          platform: "linux",
+        }).pipe(
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, noSpawn),
+          Effect.provideService(HostProcess.HomeDirectory, tempDir),
+        );
+        const provider = yield* enrichProviderSnapshotWithVersionAdvisory(
+          { ...installedPackageToolProvider, driver: driver("claudeAgent"), version: "2.1.308" },
+          capabilities,
+          { enableProviderUpdateChecks: true },
+        ).pipe(
+          Effect.provideServiceEffect(
+            ProviderLatestVersions.ProviderLatestVersions,
+            ProviderLatestVersions.make([
+              ["@anthropic-ai/claude-code", "2.1.312"],
+              ["@anthropic-ai/claude-code@stable", "2.1.308"],
+            ]),
+          ),
+          Effect.provideService(
+            HttpClient.HttpClient,
+            HttpClient.make(() => Effect.die("the channel versions are already cached")),
+          ),
+        );
+        expect(provider.versionAdvisory).toMatchObject({
+          status: "current",
+          latestVersion: "2.1.308",
+        });
+      }),
+  );
+  it.effect.each([
+    { settings: '{"autoUpdatesChannel":"stable"}', tag: "stable" },
+    { settings: '{"autoUpdatesChannel":"latest"}', tag: "latest" },
+    { settings: "{}", tag: "latest" },
+    { settings: "invalid json", tag: "latest" },
+    { settings: null, tag: "latest" },
+  ])("fetches Claude's $tag release with settings $settings", ({ settings, tag }) =>
+    Effect.gen(function* () {
+      const tempDir = yield* makeTempDir("t3-claude-channel");
+      NodeFS.mkdirSync(tempDir, { recursive: true });
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => NodeFS.rmSync(tempDir, { recursive: true, force: true })),
+      );
+      if (settings !== null)
+        NodeFS.writeFileSync(NodePath.join(tempDir, "settings.json"), settings);
+      const capabilities = yield* resolvePackageManagedProviderMaintenance(claudeUpdate, {
+        binaryPath: "claude",
+        resolvedCommandPath: "/home/me/.local/bin/claude",
+        realCommandPath: "/home/me/.local/share/claude/versions/2.1.308",
+        env: { CLAUDE_CONFIG_DIR: tempDir },
+        platform: "linux",
+      }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, noSpawn));
+      let requests = 0;
+      yield* Effect.gen(function* () {
+        expect(yield* resolveLatestProviderVersion(capabilities)).toBe("2.1.308");
+        yield* invalidateLatestProviderVersion(capabilities);
+        expect(yield* resolveLatestProviderVersion(capabilities)).toBe("2.1.308");
+      }).pipe(
+        Effect.provide(ProviderLatestVersions.layer),
+        Effect.provideService(
+          HttpClient.HttpClient,
+          HttpClient.make((request) => {
+            requests += 1;
+            expect(request.url).toBe(
+              `https://registry.npmjs.org/%40anthropic-ai%2Fclaude-code/${tag}`,
+            );
+            return Effect.succeed(
+              HttpClientResponse.fromWeb(request, Response.json({ version: "2.1.308" })),
+            );
+          }),
+        ),
+      );
+      expect(requests).toBe(2);
+    }),
+  );
   const otherProviderUpdate = {
     provider: driver("nativePackageTool"),
     npmPackageName: "@example/native-package-tool",

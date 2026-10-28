@@ -93,6 +93,24 @@ const NpmLatestVersionResponse = Schema.Struct({
   version: Schema.optional(Schema.String),
 });
 
+const ClaudeUpdateSettings = Schema.fromJsonString(
+  Schema.Struct({ autoUpdatesChannel: Schema.optional(Schema.Literals(["stable", "latest"])) }),
+);
+
+const resolveClaudeUpdateChannel = Effect.fn("resolveClaudeUpdateChannel")(function* (
+  context: ProviderMaintenanceResolutionContext,
+) {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const home = yield* HostProcess.HomeDirectory;
+  const configDir = context.env.CLAUDE_CONFIG_DIR?.trim() || path.join(home, ".claude");
+  return yield* fileSystem.readFileString(path.join(configDir, "settings.json")).pipe(
+    Effect.flatMap(Schema.decodeUnknownEffect(ClaudeUpdateSettings)),
+    Effect.map((settings) => settings.autoUpdatesChannel ?? "latest"),
+    Effect.orElseSucceed(() => "latest" as const),
+  );
+});
+
 function nonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
@@ -114,6 +132,7 @@ function quoteUpdateExecutable(executable: string, platform: NodeJS.Platform): s
 export function makeProviderMaintenanceCapabilities(input: {
   readonly provider: ProviderDriverKind;
   readonly packageName: string | null;
+  readonly packageVersionTag?: string;
   readonly updateExecutable: string | null;
   readonly updateArgs: ReadonlyArray<string>;
   readonly updateLockKey: string | null;
@@ -142,6 +161,7 @@ export function makeProviderMaintenanceCapabilities(input: {
   return {
     provider: input.provider,
     packageName: input.packageName,
+    ...(input.packageVersionTag ? { packageVersionTag: input.packageVersionTag } : {}),
     update,
     ...("latestVersion" in input ? { latestVersion: input.latestVersion } : {}),
     ...(input.lookupLatestVersion ? { lookupLatestVersion: input.lookupLatestVersion } : {}),
@@ -452,10 +472,15 @@ export const resolvePackageManagedProviderMaintenance = Effect.fn(
   }
 
   const nativeUpdate = definition.nativeUpdate;
+  const packageVersionTag =
+    nativeUpdate && definition.provider === "claudeAgent"
+      ? yield* resolveClaudeUpdateChannel(context)
+      : undefined;
   const native = nativeUpdate
     ? makeProviderMaintenanceCapabilities({
         provider: definition.provider,
         packageName,
+        ...(packageVersionTag === "stable" ? { packageVersionTag } : {}),
         updateExecutable: context.resolvedCommandPath,
         updateArgs: nativeUpdate.args,
         updateLockKey: `${definition.provider}-native`,
@@ -847,10 +872,13 @@ export function createProviderVersionAdvisory(input: {
   };
 }
 
-const fetchNpmLatestVersion = Effect.fn("fetchNpmLatestVersion")(function* (packageName: string) {
+const fetchNpmLatestVersion = Effect.fn("fetchNpmLatestVersion")(function* (
+  packageName: string,
+  versionTag = "latest",
+) {
   const client = yield* HttpClient.HttpClient;
   const request = HttpClientRequest.get(
-    `https://registry.npmjs.org/${encodeURIComponent(packageName)}/latest`,
+    `https://registry.npmjs.org/${encodeURIComponent(packageName)}/${encodeURIComponent(versionTag)}`,
   ).pipe(HttpClientRequest.setHeader("accept", "application/json"));
   const response = yield* client.execute(request).pipe(
     Effect.timeoutOption(LATEST_VERSION_TIMEOUT_MS),
@@ -870,6 +898,12 @@ const fetchNpmLatestVersion = Effect.fn("fetchNpmLatestVersion")(function* (pack
   return payload ? nonEmptyString(payload.version) : null;
 });
 
+function packageLatestVersionKey(capabilities: ProviderMaintenanceCapabilities) {
+  return capabilities.packageName && capabilities.packageVersionTag
+    ? `${capabilities.packageName}@${capabilities.packageVersionTag}`
+    : capabilities.packageName;
+}
+
 /** The installer's own answer is cached apart from the npm registry entry. */
 function installerLatestVersionKey(capabilities: ProviderMaintenanceCapabilities) {
   const update = capabilities.update;
@@ -881,7 +915,7 @@ function installerLatestVersionKey(capabilities: ProviderMaintenanceCapabilities
 export function latestProviderVersionCacheKeys(
   capabilities: ProviderMaintenanceCapabilities,
 ): ReadonlyArray<string> {
-  return [capabilities.packageName, installerLatestVersionKey(capabilities)].filter(
+  return [packageLatestVersionKey(capabilities), installerLatestVersionKey(capabilities)].filter(
     (key) => key !== null,
   );
 }
@@ -902,11 +936,15 @@ export const resolveLatestProviderVersion = Effect.fn("resolveLatestProviderVers
     return maintenanceCapabilities.latestVersion;
   }
   const packageName = maintenanceCapabilities.packageName;
-  if (!packageName) {
+  const packageKey = packageLatestVersionKey(maintenanceCapabilities);
+  if (!packageName || !packageKey) {
     return null;
   }
 
-  return yield* latestVersions.cached(packageName, fetchNpmLatestVersion(packageName));
+  return yield* latestVersions.cached(
+    packageKey,
+    fetchNpmLatestVersion(packageName, maintenanceCapabilities.packageVersionTag),
+  );
 });
 
 export const invalidateLatestProviderVersion = Effect.fn("invalidateLatestProviderVersion")(

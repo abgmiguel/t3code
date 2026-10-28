@@ -4,6 +4,7 @@ import type * as Effect from "effect/Effect";
 export interface ProviderMaintenanceCapabilities {
   readonly provider: ProviderDriverKind;
   readonly packageName: string | null;
+  readonly packageVersionTag?: string;
   readonly update: ProviderMaintenanceCommandAction | null;
   /**
    * `undefined` means the installer has no channel of its own and the npm
